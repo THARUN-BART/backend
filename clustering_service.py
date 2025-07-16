@@ -23,11 +23,15 @@ ONESIGNAL_API_KEY = os.getenv('ONESIGNAL_API_KEY')
 
 # --- Firebase Admin SDK Initialization ---
 # Use environment variable if set, otherwise default to backend/serviceAccountKey.json
-SERVICE_ACCOUNT_PATH = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'matche-39f37-firebase-adminsdk-fbsvc-50793ed379.json')
+if 'GOOGLE_APPLICATION_CREDENTIALS_JSON' in os.environ:
+    with open('firebase_creds.json', 'w') as f:
+        f.write(os.environ['GOOGLE_APPLICATION_CREDENTIALS_JSON'])
+    cred_path = 'firebase_creds.json'
+else:
+    cred_path = 'matche-39f37-firebase-adminsdk-fbsvc-50793ed379.json'
+cred = credentials.Certificate(cred_path)
+firebase_admin.initialize_app(cred)
 
-if not firebase_admin._apps:
-    cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-    firebase_admin.initialize_app(cred)
 
 # Firestore client (if needed elsewhere)
 db = firestore.client()
