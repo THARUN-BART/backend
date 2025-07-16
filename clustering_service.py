@@ -10,8 +10,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 import requests
 from dotenv import load_dotenv
 
-from notification import send_onesignal_notification, send_fcm_notification
-
 # Load environment variables
 load_dotenv()
 
