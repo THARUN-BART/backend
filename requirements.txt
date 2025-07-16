@@ -1,5 +1,6 @@
 Flask
-flask-cors
 firebase-admin
+requests
+python-dotenv
+scikit-learn
 numpy
-scikit-learn 
