@@ -247,15 +247,44 @@ def notify_new_connection(user_id, other_user_name):
     except Exception as e:
         print(f"Error notifying new connection: {e}")
 
+# --- Utility: Notify Connection Request ---
+def notify_connection_request(user_id, from_user_name):
+    payload = {
+        "user_id": user_id,
+        "title": "New Connection Request",
+        "message": f"{from_user_name} sent you a connection request.",
+        "data": {"type": "connection_request"}
+    }
+    try:
+        response = requests.post("https://backend-u5oi.onrender.com/notify-user", json=payload)
+        print(f"Notify connection request response: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"Error notifying connection request: {e}")
+
+# --- Utility: Notify Connection Accepted ---
+def notify_connection_accepted(user_id, by_user_name):
+    payload = {
+        "user_id": user_id,
+        "title": "Connection Accepted",
+        "message": f"{by_user_name} accepted your connection request.",
+        "data": {"type": "connection_accepted"}
+    }
+    try:
+        response = requests.post("https://backend-u5oi.onrender.com/notify-user", json=payload)
+        print(f"Notify connection accepted response: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"Error notifying connection accepted: {e}")
+
 # --- Utility: Notify Group Invitation ---
 def notify_group_invitation(user_id, group_name):
     payload = {
         "user_id": user_id,
         "title": "Group Invitation",
-        "message": f"You have been invited to join the group: {group_name}."
+        "message": f"You have been invited to join the group: {group_name}.",
+        "data": {"type": "group_invitation"}
     }
     try:
-        response = requests.post("http://localhost:5000/notify-user", json=payload)
+        response = requests.post("https://backend-u5oi.onrender.com/notify-user", json=payload)
         print(f"Notify group invitation response: {response.status_code} {response.text}")
     except Exception as e:
         print(f"Error notifying group invitation: {e}")
