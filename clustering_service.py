@@ -3,7 +3,7 @@ import json
 import traceback
 from flask import Flask, request, jsonify
 import firebase_admin
-from firebase_admin import credentials, firestore, messaging
+from firebase_admin import credentials, firestore
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
@@ -12,11 +12,13 @@ from kneed import KneeLocator
 import requests
 from dotenv import load_dotenv
 
+# Load env variables
 load_dotenv()
 
+# Flask App
 app = Flask(__name__)
 
-# Environment Variables
+# Environment variables
 FCM_SERVER_KEY = os.getenv('FCM_SERVER_KEY')
 ONESIGNAL_APP_ID = os.getenv('ONESIGNAL_APP_ID')
 ONESIGNAL_API_KEY = os.getenv('ONESIGNAL_API_KEY')
@@ -28,10 +30,10 @@ if 'GOOGLE_APPLICATION_CREDENTIALS_JSON' in os.environ:
 else:
     cred_path = 'matche-39f37-firebase-adminsdk-fbsvc-50793ed379.json'
     cred = credentials.Certificate(cred_path)
-
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
+# Big 5 keys
 BIG5_KEYS = ['big5_O', 'big5_C', 'big5_E', 'big5_A', 'big5_N']
 
 def flatten_availability(user):
@@ -40,7 +42,7 @@ def flatten_availability(user):
     if isinstance(availability, dict):
         for day, slots in availability.items():
             if isinstance(slots, list):
-                flat_slots += [f"{day}_{slot}" for slot in slots]
+                flat_slots.extend([f"{day}_{slot}" for slot in slots])
             elif isinstance(slots, str):
                 flat_slots.append(f"{day}_{slots}")
     elif isinstance(availability, list):
@@ -65,18 +67,14 @@ def cluster():
     if len(users) < 2:
         return jsonify([])
 
-    all_skills = set()
-    all_interests = set()
-    all_avail = set()
+    all_skills, all_interests, all_avail = set(), set(), set()
 
     for u in users:
         all_skills.update(u.get('skills', []))
         all_interests.update(u.get('interests', []))
         all_avail.update(flatten_availability(u))
 
-    all_skills = sorted(all_skills)
-    all_interests = sorted(all_interests)
-    all_avail = sorted(all_avail)
+    all_skills, all_interests, all_avail = sorted(all_skills), sorted(all_interests), sorted(all_avail)
 
     feature_matrix = []
     for u in users:
@@ -110,7 +108,6 @@ def cluster():
     user_vec = X_scaled[idx].reshape(1, -1)
 
     cluster_indices = [i for i, c in enumerate(clusters) if c == user_cluster and i != idx]
-
     if not cluster_indices:
         return jsonify([])
 
@@ -132,66 +129,25 @@ def cluster():
     ]
     return jsonify(result)
 
-# --- Notification Helpers ---
-def send_fcm_notification(token, title, body):
+@app.route('/user/<user_id>', methods=['GET'])
+def get_user(user_id):
     try:
-        response = requests.post(
-            "https://fcm.googleapis.com/fcm/send",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"key={FCM_SERVER_KEY}"
-            },
-            json={
-                "to": token,
-                "notification": {"title": title, "body": body}
-            }
-        )
-        response.raise_for_status()
-        return response.json()
+        doc = db.collection('users').document(user_id).get()
+        if not doc.exists:
+            return jsonify({'error': 'User not found'}), 404
+        return jsonify(doc.to_dict()), 200
     except Exception as e:
-        print(traceback.format_exc())
-        return {"error": str(e)}
+        return jsonify({'error': str(e)}), 500
 
-def send_onesignal_notification(player_id, title, body):
-    try:
-        response = requests.post(
-            "https://onesignal.com/api/v1/notifications",
-            headers={
-                "Authorization": f"Basic {ONESIGNAL_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "app_id": ONESIGNAL_APP_ID,
-                "include_player_ids": [player_id],
-                "headings": {"en": title},
-                "contents": {"en": body}
-            }
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        print(traceback.format_exc())
-        return {"error": str(e)}
-
-@app.route('/send-fcm', methods=['POST'])
-def send_fcm_route():
+@app.route('/save-fcm-token', methods=['POST'])
+def save_fcm_token():
     data = request.json
-    token = data.get('token')
-    title = data.get('title')
-    body = data.get('body')
-    if not all([token, title, body]):
-        return jsonify({"error": "Missing required fields"}), 400
-    return jsonify(send_fcm_notification(token, title, body))
-
-@app.route('/send-onesignal', methods=['POST'])
-def send_onesignal_route():
-    data = request.json
-    player_id = data.get('player_id')
-    title = data.get('title')
-    body = data.get('body')
-    if not all([player_id, title, body]):
-        return jsonify({"error": "Missing required fields"}), 400
-    return jsonify(send_onesignal_notification(player_id, title, body))
+    user_id = data.get('user_id')
+    fcm_token = data.get('fcm_token')
+    if not user_id or not fcm_token:
+        return jsonify({'error': 'Missing user_id or fcm_token'}), 400
+    db.collection('users').document(user_id).set({'fcm_token': fcm_token}, merge=True)
+    return jsonify({'message': 'Token saved'}), 200
 
 @app.route('/notify-user', methods=['POST'])
 def notify_user():
@@ -220,68 +176,6 @@ def notify_user():
         "Content-Type": "application/json"
     })
     return jsonify(response.json()), response.status_code
-
-# --- Utility Functions ---
-def notify_new_connection(user_id, other_user_name):
-    try:
-        response = requests.post(f"{BACKEND_URL}/notify-user", json={
-            "user_id": user_id,
-            "title": "New Connection!",
-            "message": f"You are now connected with {other_user_name}."
-        })
-        print(f"Connection notification sent: {response.status_code}")
-    except Exception:
-        print(traceback.format_exc())
-
-def notify_connection_request(user_id, from_user_name):
-    try:
-        response = requests.post(f"{BACKEND_URL}/notify-user", json={
-            "user_id": user_id,
-            "title": "New Connection Request",
-            "message": f"{from_user_name} sent you a connection request.",
-            "data": {"type": "connection_request"}
-        })
-        print(f"Connection request sent: {response.status_code}")
-    except Exception:
-        print(traceback.format_exc())
-
-def notify_connection_accepted(user_id, by_user_name):
-    try:
-        response = requests.post(f"{BACKEND_URL}/notify-user", json={
-            "user_id": user_id,
-            "title": "Connection Accepted",
-            "message": f"{by_user_name} accepted your connection request.",
-            "data": {"type": "connection_accepted"}
-        })
-        print(f"Connection accepted notification: {response.status_code}")
-    except Exception:
-        print(traceback.format_exc())
-
-def notify_group_invitation(user_id, group_name):
-    try:
-        response = requests.post(f"{BACKEND_URL}/notify-user", json={
-            "user_id": user_id,
-            "title": "Group Invitation",
-            "message": f"You've been invited to join the group: {group_name}.",
-            "data": {"type": "group_invitation"}
-        })
-        print(f"Group invite sent: {response.status_code}")
-    except Exception:
-        print(traceback.format_exc())
-
-def notify_new_message(user_id, sender_name, message_preview, chat_id=None):
-    payload = {
-        "user_id": user_id,
-        "title": f"New message from {sender_name}",
-        "message": message_preview
-    }
-    if chat_id:
-        payload["data"] = {"type": "chat", "chat_id": chat_id}
-    try:
-        response = requests.post(f"{BACKEND_URL}/notify-user", json=payload)
-        print(f"Message notification: {response.status_code}")
-    except Exception:
-        print(traceback.format_exc())
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
