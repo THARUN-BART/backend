@@ -5,14 +5,11 @@ from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, firestore
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
-from kneed import KneeLocator
 import requests
 from dotenv import load_dotenv
 
-# Load env variables
+# Load environment variables
 load_dotenv()
 
 # Flask App
@@ -49,6 +46,33 @@ def flatten_availability(user):
         flat_slots = availability
     return flat_slots
 
+def jaccard(set1, set2):
+    s1, s2 = set(set1), set(set2)
+    if not s1 and not s2:
+        return 1.0
+    if not s1 or not s2:
+        return 0.0
+    return len(s1 & s2) / len(s1 | s2)
+
+def skill_difference(set1, set2):
+    return 1 - jaccard(set1, set2)
+
+def big5_vector(user):
+    return np.array([float(user.get(k, 0.5)) for k in BIG5_KEYS]).reshape(1, -1)
+
+def personality_compatibility(vec1, vec2):
+    sim = cosine_similarity(vec1, vec2)[0, 0]
+    return (sim + 1) / 2  # scale from [-1, 1] to [0, 1]
+
+# Weights for matching
+MATCH_WEIGHTS = {
+    'interest': 2.0,
+    'availability': 1.5,
+    'skills': 2.0,
+    'personality': 1.0
+}
+
+
 @app.route('/cluster', methods=['GET'])
 def cluster():
     user_id = request.args.get('userId')
@@ -64,70 +88,46 @@ def cluster():
         users.append(data)
         user_ids.append(doc.id)
 
-    if len(users) < 2:
-        return jsonify([])
-
-    all_skills, all_interests, all_avail = set(), set(), set()
-
-    for u in users:
-        all_skills.update(u.get('skills', []))
-        all_interests.update(u.get('interests', []))
-        all_avail.update(flatten_availability(u))
-
-    all_skills, all_interests, all_avail = sorted(all_skills), sorted(all_interests), sorted(all_avail)
-
-    feature_matrix = []
-    for u in users:
-        skills_vec = [1 if s in u.get('skills', []) else 0 for s in all_skills]
-        interests_vec = [1 if i in u.get('interests', []) else 0 for i in all_interests]
-        avail_vec = [1 if slot in flatten_availability(u) else 0 for slot in all_avail]
-        big5_vec = [float(u.get(k, 0.5)) for k in BIG5_KEYS]
-        feature_matrix.append(skills_vec + interests_vec + avail_vec + big5_vec)
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(feature_matrix)
-
-    inertias = []
-    max_k = min(len(users), 10)
-    for k in range(1, max_k + 1):
-        km = KMeans(n_clusters=k, random_state=42, n_init='auto')
-        km.fit(X_scaled)
-        inertias.append(km.inertia_)
-
-    kneedle = KneeLocator(range(1, max_k + 1), inertias, curve='convex', direction='decreasing')
-    optimal_k = kneedle.elbow or 3
-
-    kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init='auto')
-    clusters = kmeans.fit_predict(X_scaled)
-
     if user_id not in user_ids:
         return jsonify({'error': 'User not found'}), 404
 
     idx = user_ids.index(user_id)
-    user_cluster = clusters[idx]
-    user_vec = X_scaled[idx].reshape(1, -1)
+    user = users[idx]
+    user_interests = user.get('interests', [])
+    user_skills = user.get('skills', [])
+    user_avail = flatten_availability(user)
+    user_personality = big5_vector(user)
 
-    cluster_indices = [i for i, c in enumerate(clusters) if c == user_cluster and i != idx]
-    if not cluster_indices:
-        return jsonify([])
+    scores = []
+    for i, other in enumerate(users):
+        if i == idx:
+            continue
+        interest_sim = jaccard(user_interests, other.get('interests', []))
+        avail_sim = jaccard(user_avail, flatten_availability(other))
+        skill_diff = skill_difference(user_skills, other.get('skills', []))
+        other_personality = big5_vector(other)
+        personality_sim = personality_compatibility(user_personality, other_personality)
 
-    cluster_vectors = X_scaled[cluster_indices]
-    similarities = cosine_similarity(user_vec, cluster_vectors)[0]
+        score = (
+            MATCH_WEIGHTS['interest'] * interest_sim +
+            MATCH_WEIGHTS['availability'] * avail_sim +
+            MATCH_WEIGHTS['skills'] * skill_diff +
+            MATCH_WEIGHTS['personality'] * personality_sim
+        )
+        scores.append((score, i))
 
-    similarity_pairs = sorted(
-        [(similarities[i], cluster_indices[i]) for i in range(len(similarities))],
-        key=lambda x: x[0], reverse=True
-    )
-    top_pairs = similarity_pairs[:top_n]
+    scores.sort(reverse=True)
+    top = scores[:top_n]
 
-    result = [
-        {
-            "uid": users[user_idx]['uid'],
-            "similarity": round(((float(sim) + 1) / 2) * 100, 2)
-        }
-        for sim, user_idx in top_pairs
-    ]
+    result = []
+    for score, i in top:
+        result.append({
+            "uid": users[i]['uid'],
+            "similarity": f"{round(score * 10, 1)}%"
+        })
+
     return jsonify(result)
+
 
 @app.route('/user/<user_id>', methods=['GET'])
 def get_user(user_id):
@@ -137,6 +137,7 @@ def get_user(user_id):
             return jsonify({'error': 'User not found'}), 404
         return jsonify(doc.to_dict()), 200
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/save-fcm-token', methods=['POST'])
@@ -176,6 +177,7 @@ def notify_user():
         "Content-Type": "application/json"
     })
     return jsonify(response.json()), response.status_code
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
