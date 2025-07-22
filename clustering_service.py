@@ -123,7 +123,7 @@ def cluster():
     for score, i in top:
         result.append({
             "uid": users[i]['uid'],
-            "similarity": f"{round(score * 10, 1)}%"
+            "similarity": f"{round(score * 10, 1)}"
         })
 
     return jsonify(result)
