@@ -78,6 +78,17 @@ def cluster():
     user_id = request.args.get('userId')
     top_n = int(request.args.get('top', 5))
 
+    # Get filter parameters from request
+    filter_skills = request.args.getlist('skills') or []
+    filter_interests = request.args.getlist('interests') or []
+    filter_availability = {}
+
+    # Parse availability filters (format: day1=slot1,slot2&day2=slot1)
+    for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']:
+        slots = request.args.get(day, '').split(',')
+        if slots and slots != ['']:
+            filter_availability[day] = slots
+
     users_snap = db.collection('users').stream()
     users = []
     user_ids = []
@@ -102,17 +113,48 @@ def cluster():
     for i, other in enumerate(users):
         if i == idx:
             continue
-        interest_sim = jaccard(user_interests, other.get('interests', []))
-        avail_sim = jaccard(user_avail, flatten_availability(other))
-        skill_diff = skill_difference(user_skills, other.get('skills', []))
+
+        # Apply filters first
+        other_skills = other.get('skills', [])
+        other_interests = other.get('interests', [])
+        other_avail = flatten_availability(other)
+
+        # Skip if doesn't match filters (OR logic between filter categories)
+        matches_filter = True
+        if filter_skills or filter_interests or filter_availability:
+            matches_filter = False
+
+            # Check skills filter
+            if filter_skills and any(skill in other_skills for skill in filter_skills):
+                matches_filter = True
+
+            # Check interests filter
+            if not matches_filter and filter_interests and any(interest in other_interests for interest in filter_interests):
+                matches_filter = True
+
+            # Check availability filter
+            if not matches_filter and filter_availability:
+                for day, slots in filter_availability.items():
+                    other_day_slots = other.get('availability', {}).get(day, [])
+                    if any(slot in other_day_slots for slot in slots):
+                        matches_filter = True
+                        break
+
+        if not matches_filter:
+            continue
+
+        # Calculate similarity scores
+        interest_sim = jaccard(user_interests, other_interests)
+        avail_sim = jaccard(user_avail, other_avail)
+        skill_diff = skill_difference(user_skills, other_skills)
         other_personality = big5_vector(other)
         personality_sim = personality_compatibility(user_personality, other_personality)
 
         score = (
-            MATCH_WEIGHTS['interest'] * interest_sim +
-            MATCH_WEIGHTS['availability'] * avail_sim +
-            MATCH_WEIGHTS['skills'] * skill_diff +
-            MATCH_WEIGHTS['personality'] * personality_sim
+                MATCH_WEIGHTS['interest'] * interest_sim +
+                MATCH_WEIGHTS['availability'] * avail_sim +
+                MATCH_WEIGHTS['skills'] * skill_diff +
+                MATCH_WEIGHTS['personality'] * personality_sim
         )
         scores.append((score, i))
 
@@ -127,7 +169,6 @@ def cluster():
         })
 
     return jsonify(result)
-
 
 @app.route('/user/<user_id>', methods=['GET'])
 def get_user(user_id):
